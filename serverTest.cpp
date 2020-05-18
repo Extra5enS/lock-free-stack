@@ -5,6 +5,7 @@
 
 LFStack<int> stack; 
 bool start;
+std::atomic<int> finish = {0};
 
 void pusher(int i) {
     ThreadEpoch<int> epoch;
@@ -12,14 +13,19 @@ void pusher(int i) {
     for(int j = 0; j < 100; ++j) {
         stack.push(i, epoch);
     }
+    finish++;
 }
 
 void poper() {
     ThreadEpoch<int> epoch;
     while(!start);
     for(int i = 0; i < 100; ++i) {
-        *stack.pop(epoch);
+        std::shared_ptr<int> buf;
+        if((buf = stack.pop(epoch)) != nullptr) {
+            //fprintf(stderr, "%d ", *buf);
+        }
     }
+    finish++;
 }
 
 void searcher(int i) {
@@ -28,6 +34,7 @@ void searcher(int i) {
     for(int j = 0; j < 100; ++j) {
         stack.search(i, epoch);
     }
+    finish++;
 }
 
 int main(int argc, char** argv) {
@@ -36,14 +43,11 @@ int main(int argc, char** argv) {
         return -1;
     } 
     int threadN = atoi(argv[1]);
-    if(threadN / 100 == 0 || threadN % 100 != 0) {
-        fprintf(stderr, "I may have problems with such args!\n");
-    }
     double secCount = 0;
     for(int k = 0; k < 20; ++k) {
         std::vector<std::thread> threads;
         for(int i = 0; i < threadN; ++i) {
-            if(i % 100 == 0) {
+            if(i % 20 == 0) {
                 threads.push_back(std::thread(poper));
             } else if(i % 10 == 0) {
                 threads.push_back(std::thread(pusher, i / 10));
@@ -54,14 +58,24 @@ int main(int argc, char** argv) {
 
         auto init = std::chrono::steady_clock::now();
         start = true;
-        for(auto& th : threads) {
-            th.join();
-        }
+        
+        while(finish.load() < threadN); 
+        finish.store(0);
+
         std::chrono::duration<double> elapsed_seconds; 
         elapsed_seconds = std::chrono::steady_clock::now() - init; 
         secCount += elapsed_seconds.count(); 
+
+        for(auto& th : threads) {
+            th.join();
+        }
+        /* 
+        std::cout << std::endl;
+        stack.for_each([](int i) {
+                std::cout << i << ' ';
+                });
+        std::cout << std::endl;*/
     }
     std::cout << threadN << " " << secCount / 20 << std::endl;
-
     return 0;
 }
