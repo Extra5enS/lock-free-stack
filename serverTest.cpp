@@ -19,7 +19,7 @@ void pusher(int i) {
 void poper() {
     ThreadEpoch<int> epoch;
     while(!start);
-    for(int i = 0; i < 100; ++i) {
+    for(;!stack.empty();) {
         std::shared_ptr<int> buf;
         if((buf = stack.pop(epoch)) != nullptr) {
             //fprintf(stderr, "%d ", *buf);
@@ -44,38 +44,30 @@ int main(int argc, char** argv) {
     } 
     int threadN = atoi(argv[1]);
     double secCount = 0;
-    for(int k = 0; k < 20; ++k) {
-        std::vector<std::thread> threads;
-        for(int i = 0; i < threadN; ++i) {
-            if(i % 20 == 0) {
-                threads.push_back(std::thread(poper));
-            } else if(i % 10 == 0) {
-                threads.push_back(std::thread(pusher, i / 10));
-            } else {
-                threads.push_back(std::thread(searcher, i / 10));
-            }
+    finish.store(0);
+    std::vector<std::thread> threads;
+    for(int i = 0; i < threadN; ++i) {
+        if(i % 100 == 0) {
+            threads.push_back(std::thread(poper));
+        } else if(i % 10 == 0) {
+            threads.push_back(std::thread(pusher, i / 10));
+        } else {
+            threads.push_back(std::thread(searcher, i / 10));
         }
-
-        auto init = std::chrono::steady_clock::now();
-        start = true;
-        
-        while(finish.load() < threadN); 
-        finish.store(0);
-
-        std::chrono::duration<double> elapsed_seconds; 
-        elapsed_seconds = std::chrono::steady_clock::now() - init; 
-        secCount += elapsed_seconds.count(); 
-
-        for(auto& th : threads) {
-            th.join();
-        }
-        /* 
-        std::cout << std::endl;
-        stack.for_each([](int i) {
-                std::cout << i << ' ';
-                });
-        std::cout << std::endl;*/
     }
-    std::cout << threadN << " " << secCount / 20 << std::endl;
+
+    auto init = std::chrono::steady_clock::now();
+    start = true; // start work;
+
+    while(finish.load() < threadN); 
+
+    std::chrono::duration<double> elapsed_seconds; 
+    elapsed_seconds = std::chrono::steady_clock::now() - init; 
+    secCount += elapsed_seconds.count(); 
+
+    for(auto& th : threads) {
+        th.join();
+    }
+    std::cout << threadN << " " << secCount << std::endl;
     return 0;
 }

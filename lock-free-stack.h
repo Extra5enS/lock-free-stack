@@ -29,18 +29,17 @@ std::atomic<bool> inDelete = {false};
 template<class T>
 struct ThreadEpoch {
     unsigned threadEpoch;
-
-    ThreadEpoch(): threadEpoch(1) {
+    int whoIam = -1;
+    ThreadEpoch(): threadEpoch(1), whoIam(whoIam) {
         threadCount++;   
     }
 
     auto add(Node<T>* ptr) -> void { // add like push
-        ptr -> next = array<T>[threadEpoch % EPOCH_COUNT].load();
+        auto& head = array<T>[threadEpoch % EPOCH_COUNT];
+        ptr -> next = head.load();
         //fprintf(stderr, "%p\n", array<T>[threadEpoch % EPOCH_COUNT].load());
                  
-        __asm volatile("pause");
-        while(!array<T>[threadEpoch % EPOCH_COUNT].
-                compare_exchange_weak(ptr -> next, ptr)) {
+        while(!head.compare_exchange_weak(ptr -> next, ptr)) {
             usleep(SLEEP_TIME);
         }
         //fprintf(stderr, "%p -> %p\n", array<T>[threadEpoch % EPOCH_COUNT].load(), 
@@ -50,7 +49,7 @@ struct ThreadEpoch {
     auto enter() -> void {
         if(threadEpoch <= globalEpoch.load()) {
             //fprintf(stderr, "%d\n", threadEpoch);
-            threadEpoch = globalEpoch.load() + 1;
+            threadEpoch = globalEpoch.load(std::memory_order_release) + 1u;
             threadInEpoch++;
         }
     }
@@ -58,19 +57,18 @@ struct ThreadEpoch {
     auto exit() -> void {
         auto thc = threadCount.load();
         auto thie = threadInEpoch.load();
-
-        //fprintf(stderr, "%d and %d\n", thc, thie);
-
+        /*
         if(thc < thie) {
-            thc = thie;
-        }
+            threadInEpoch.store(thc);
+        }*/
+
         bool f = false;
         if(inDelete.compare_exchange_weak(f, true)) {
-
+            
             if(threadInEpoch.compare_exchange_weak(thc, 0)) {
                 globalEpoch++;
                 int iter = (globalEpoch.load() - 1) % EPOCH_COUNT;
-                for(Node<T>* start = array<T>[iter].load(); start != nullptr;) {
+                for(Node<T>* start = array<T>[iter].load(std::memory_order_release); start != nullptr;) {
                     auto p = start;
                     start = start -> next;
                     delete p;
@@ -80,25 +78,15 @@ struct ThreadEpoch {
             inDelete.store(false);
         }
     }
+
     ~ThreadEpoch() {
+        threadInEpoch--;
         threadCount--;
-        /*
-        if(threadCount == 0) {
-            std::cout << "here" << std::endl;
-            for(int i = 0; i < EPOCH_COUNT; ++i) {
-                for(Node<T>* start = array<T>[i].load(); start != nullptr;) {
-                    auto p = start;
-                    start = start -> next;
-                    delete p;
-                }            
-            }
-        }
-        */
     }
 };
 
 
-template<class T>
+    template<class T>
 class LFStack {
     std::mutex iterMutex;
     std::atomic<Node<T>*> head;
@@ -119,7 +107,6 @@ class LFStack {
 
         Node<T>* const newNode = new Node<T>(value);
         newNode -> next = head.load();
-        __asm volatile("pause");
         while(!head.compare_exchange_weak(newNode -> next, newNode)) { 
             newNode -> next = head.load();
             usleep(SLEEP_TIME);
@@ -135,21 +122,20 @@ class LFStack {
         iterMutex.lock(); //only for lock in LFStack::for_each(...);
         iterMutex.unlock();
         threadInStack++;
-        epoch.enter();
-
-        bool itIs = false; 
         
-        for(auto node = head.load(); node != nullptr; node = node -> next) {
+        bool res = false; 
+        for(auto node = head.load(std::memory_order_consume); node != nullptr; node = node -> next) {
             if(node -> value == value) {
-                itIs = true;
+                res = true;
                 break;
             } 
         }
 
+        epoch.enter();
         epoch.exit();
 
         threadInStack--;
-        return itIs;
+        return res;
     }
 
     auto pop(ThreadEpoch<T>& epoch) -> std::shared_ptr<T> {
@@ -157,19 +143,15 @@ class LFStack {
         iterMutex.lock(); //only for lock in LFStack::for_each(...);
         iterMutex.unlock();
         threadInStack++;
-
-        //TODO impliment hazard pointer
-        //or Epoch-based reclamation <- we will use it!
-        
+ 
         Node<T>* oldHead = head.load();
-        __asm volatile("pause");
         while(oldHead && !head.compare_exchange_weak(oldHead,oldHead -> next)) {
             usleep(SLEEP_TIME);
             //oldHead = head.load();
         }
 
         if(oldHead == nullptr) {
-            return { nullptr };
+            return nullptr;
         }
         
         std::shared_ptr<T> res = std::make_shared<T>(oldHead -> value); 
