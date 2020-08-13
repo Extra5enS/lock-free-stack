@@ -56,27 +56,23 @@ struct ThreadEpoch {
         auto thc = threadCount.load();
         auto thie = threadInEpoch.load();
 
-        //bool f = false;
-        //if(inDelete.compare_exchange_weak(f, true)) {
-
-            if(threadInEpoch.compare_exchange_strong(thc, 0)) {
-                globalEpoch++;
-                int iter = (globalEpoch.load() - 1) % EPOCH_COUNT;
-                for(Node<Node<T>*>* start = array<T>[iter].load(std::memory_order_release); start != nullptr;) {
-                    auto p = start;
-                    start = start -> next;
-                    delete p -> value;
-                    delete p;
-                }
-                array<T>[iter] = nullptr;
+        if(threadInEpoch.compare_exchange_strong(thc, 0)) {
+            globalEpoch++;
+            int iter = (globalEpoch.load() - 1) % EPOCH_COUNT;
+            for(Node<Node<T>*>* start = array<T>[iter].load(std::memory_order_release); start != nullptr;) {
+                auto p = start;
+                start = start -> next;
+                delete p -> value;
+                delete p;
             }
-            //inDelete.store(false);
-        //}
+            array<T>[iter] = nullptr;
+        }
     }
 
     ~ThreadEpoch() {
         threadInEpoch--;
         threadCount--;
+        exit();
     }
 };
 
