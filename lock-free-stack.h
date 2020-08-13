@@ -20,7 +20,7 @@ struct Node {
 };
 
 template<class T>
-std::vector<std::atomic<Node<T>*>> array(EPOCH_COUNT); // We well work with it like stacks with only one deleter. 
+std::vector<std::atomic<Node<Node<T>*>*>> array(EPOCH_COUNT); // We well work with it like stacks with only one deleter. 
 std::atomic<unsigned> globalEpoch = {1};
 std::atomic<unsigned> threadInEpoch = {0};
 std::atomic<unsigned> threadCount = {0};
@@ -29,26 +29,24 @@ std::atomic<bool> inDelete = {false};
 template<class T>
 struct ThreadEpoch {
     unsigned threadEpoch;
-    int whoIam = -1;
-    ThreadEpoch(): threadEpoch(1), whoIam(whoIam) {
+    ThreadEpoch(): threadEpoch(1) {
         threadCount++;   
     }
 
     auto add(Node<T>* ptr) -> void { // add like push
+        
         auto& head = array<T>[threadEpoch % EPOCH_COUNT];
-        ptr -> next = head.load();
-        //fprintf(stderr, "%p\n", array<T>[threadEpoch % EPOCH_COUNT].load());
-                 
-        while(!head.compare_exchange_weak(ptr -> next, ptr)) {
+        Node<Node<T>*>* const newNode = new Node<Node<T>*>(ptr);
+        newNode -> next = head.load();
+
+        while(!head.compare_exchange_weak(newNode -> next, newNode)) { 
+            //newNode -> next = head.load();
             usleep(SLEEP_TIME);
         }
-        //fprintf(stderr, "%p -> %p\n", array<T>[threadEpoch % EPOCH_COUNT].load(), 
-        //        array<T>[threadEpoch % EPOCH_COUNT].load() -> next);
     }
 
     auto enter() -> void {
         if(threadEpoch <= globalEpoch.load()) {
-            //fprintf(stderr, "%d\n", threadEpoch);
             threadEpoch = globalEpoch.load(std::memory_order_release) + 1u;
             threadInEpoch++;
         }
@@ -57,26 +55,23 @@ struct ThreadEpoch {
     auto exit() -> void {
         auto thc = threadCount.load();
         auto thie = threadInEpoch.load();
-        /*
-        if(thc < thie) {
-            threadInEpoch.store(thc);
-        }*/
 
-        bool f = false;
-        if(inDelete.compare_exchange_weak(f, true)) {
-            
-            if(threadInEpoch.compare_exchange_weak(thc, 0)) {
+        //bool f = false;
+        //if(inDelete.compare_exchange_weak(f, true)) {
+
+            if(threadInEpoch.compare_exchange_strong(thc, 0)) {
                 globalEpoch++;
                 int iter = (globalEpoch.load() - 1) % EPOCH_COUNT;
-                for(Node<T>* start = array<T>[iter].load(std::memory_order_release); start != nullptr;) {
+                for(Node<Node<T>*>* start = array<T>[iter].load(std::memory_order_release); start != nullptr;) {
                     auto p = start;
                     start = start -> next;
+                    delete p -> value;
                     delete p;
                 }
                 array<T>[iter] = nullptr;
             }
-            inDelete.store(false);
-        }
+            //inDelete.store(false);
+        //}
     }
 
     ~ThreadEpoch() {
@@ -99,16 +94,17 @@ class LFStack {
     }
 
     auto push(T const& value, ThreadEpoch<T>& epoch) -> void {
-        //try to come in 
+        #ifdef DEBUG
         iterMutex.lock(); //only for lock in LFStack::for_each(...);
-        iterMutex.unlock();        
+        iterMutex.unlock();
+        #endif
+
         threadInStack++;
         epoch.enter();
-
         Node<T>* const newNode = new Node<T>(value);
         newNode -> next = head.load();
         while(!head.compare_exchange_weak(newNode -> next, newNode)) { 
-            newNode -> next = head.load();
+            //newNode -> next = head.load();
             usleep(SLEEP_TIME);
         }
 
@@ -118,13 +114,14 @@ class LFStack {
     }
 
     auto search(T value, ThreadEpoch<T>& epoch) -> bool {
-        // try to come inA
+        #ifdef DEBUG
         iterMutex.lock(); //only for lock in LFStack::for_each(...);
         iterMutex.unlock();
-        threadInStack++;
+        #endif
         
+        threadInStack++;
         bool res = false; 
-        for(auto node = head.load(std::memory_order_consume); node != nullptr; node = node -> next) {
+        for(auto node = head.load(); node != nullptr; node = node -> next) {
             if(node -> value == value) {
                 res = true;
                 break;
@@ -139,9 +136,11 @@ class LFStack {
     }
 
     auto pop(ThreadEpoch<T>& epoch) -> std::shared_ptr<T> {
-        //try to come in 
+        #ifdef DEBUG
         iterMutex.lock(); //only for lock in LFStack::for_each(...);
         iterMutex.unlock();
+        #endif
+        
         threadInStack++;
  
         Node<T>* oldHead = head.load();
@@ -165,6 +164,7 @@ class LFStack {
         return res;
     }
 
+    #ifdef DEBUG
     auto for_each(std::function<void(T)> fun_) -> void {
         iterMutex.lock();
         unsigned zero = 0u;
@@ -177,7 +177,8 @@ class LFStack {
         }
 
         iterMutex.unlock();
-    }
+    }   
+    #endif
 
     ~LFStack() {
         for(Node<T>* start = head.load(); start != nullptr;) {
